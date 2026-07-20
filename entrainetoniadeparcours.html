@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Geometry Dash - Q-Learning</title>
+    <style>
+        /* ==========================================
+           1. STYLES & UI (Interface Graphique)
+           ========================================== */
+        :root {
+            --bg-color: #2c3e50;
+            --canvas-bg: #1a1a1a;
+            --primary: #00ffcc;
+            --danger: #c0392b;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --text-color: #ecf0f1;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+            text-align: center;
+            background: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 { margin-bottom: 10px; color: #fff; }
+
+        canvas {
+            background: var(--canvas-bg);
+            border: 3px solid #fff;
+            box-shadow: 0 0 20px var(--primary);
+            margin-top: 15px;
+            cursor: crosshair;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+            max-width: 100%;
+        }
+
+        .stats {
+            font-size: 1.2rem;
+            margin-top: 15px;
+            color: var(--primary);
+            font-weight: bold;
+        }
+
+        .controls { margin-top: 15px; display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+        button, select {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+        
+        button:hover { opacity: 0.9; }
+        button:active { transform: scale(0.95); }
+        button.start { background: var(--success); color: #fff; }
+        button.stop { background: var(--danger); color: #fff; }
+        button.edit { background: var(--warning); color: #000; }
+        button.speed { background: #3498db; color: #fff; min-width: 150px; }
+        select { background: #34495e; color: #fff; border: 1px solid #fff; }
+
+        .info {
+            margin-top: 20px;
+            max-width: 700px;
+            margin-left: auto;
+            margin-right: auto;
+            background: #34495e;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🤖 AI Geometry Dash</h1>
+    
+    <!-- Statistiques -->
+    <div class="stats">
+        Essai n°: <span id="episodeCount">0</span> | 
+        Record: <span id="recordDistance">0</span> pas | 
+        Exploration: <span id="explorationRate">100%</span><br>
+        <span style="font-size: 0.9em; color: #fff;">Vision IA: <span id="aiVision" style="font-family: monospace; color: var(--primary);">En attente...</span></span>
+    </div>
+
+    <!-- Zone de Jeu -->
+    <canvas id="gameCanvas" width="800" height="300"></canvas>
+
+    <!-- Contrôles -->
+    <div class="controls">
+        <select id="levelSelect" title="Choisir un niveau"></select>
+        <button id="startBtn" class="start">▶ Lancer l'IA</button>
+        <button id="stopBtn" class="stop">⏹ Arrêter</button>
+        <button id="speedBtn" class="speed">⏩ Vitesse: x1</button>
+        <button id="resetLevelBtn" class="edit">🔄 Reset Niveau</button>
+        <button id="resetIaBtn" class="edit">🧠 Reset Cerveau IA</button>
+    </div>
+
+    <!-- Informations -->
+    <div class="info">
+        <p><b>Mode Édition :</b> L'IA doit être arrêtée. Cliquez sur le canvas pour ajouter ou retirer un pic.</p>
+        <p><b>Technologie :</b> L'IA utilise le <b>Q-Learning</b>. Elle apprend à analyser la distance des 2 prochains pics. Si elle saute dans le vide, elle est sévèrement punie pour apprendre à ne plus le faire.</p>
+    </div>
+
+    <script>
+        // ==========================================
+        // 2. CONFIGURATION & CONSTANTES
+        // ==========================================
+        const CONFIG = {
+            W: 800,
+            H: 300,
+            SOL_Y: 250,
+            GRAVITY: 0.8,
+            SPEED: 5,
+            PLAYER_SIZE: 30,
+            FINISH_LINE: 2000,
+            VISION_RANGE: 120, // L'IA ne "voit" que les pics à moins de 120px
+            VERSION: "V5_SmartJump" // Nouvelle version pour réinitialiser le cache
+        };
+
+        // 10 Niveaux de base
+        const LEVELS_PRESET = [
+            [300, 600, 900, 1200, 1500],
+            [300, 400, 700, 800, 1100, 1200, 1500, 1600],
+            [300, 330, 700, 730, 1100, 1130, 1500, 1530],
+            [300, 500, 600, 900, 1000, 1300, 1400, 1700],
+            [300, 330, 360, 800, 830, 860, 1400, 1430, 1460],
+            [300, 360, 420, 800, 860, 920, 1400, 1460, 1520],
+            [300, 500, 550, 800, 1000, 1050, 1300, 1600, 1650],
+            [300, 400, 500, 900, 1000, 1100, 1500, 1600, 1700],
+            [300, 330, 360, 390, 1000, 1030, 1060, 1090, 1600, 1630, 1660, 1690],
+            [300, 350, 400, 450, 500, 1000, 1050, 1100, 1150, 1200, 1600, 1650, 1700, 1750, 1800]
+        ];
+
+        // ==========================================
+        // 3. ÉTAT DU JEU & VARIABLES GLOBALES
+        // ==========================================
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let player = { x: 100, y: 0, vy: 0, isJumping: false };
+        let cameraX = 0;
+        let obstacles = []; 
+        let deathFlash = 0; // Effet visuel quand l'IA meurt
+        
+        let qTable = {};
+        let isRunning = false;
+        let gameSpeed = 1; // Multiplicateur de vitesse (1, 2, 4, 8, 16)
+        let stats = {
+            episode: 0,
+            record: 0,
+            distance: 0,
+            epsilon: 1.0
+        };
+
+        // Paramètres d'apprentissage
+        const LEARNING = {
+            ALPHA: 0.2,      // Vitesse d'apprentissage augmentée
+            GAMMA: 0.9,      
+            MIN_EPSILON: 0.02,
+            DECAY: 0.992     // Décroissance plus rapide pour moins de hasard
+        };
+
+        // ==========================================
+        // 4. GESTION DE LA MÉMOIRE (LocalStorage)
+        // ==========================================
+        function loadMemory() {
+            qTable = JSON.parse(localStorage.getItem(`${CONFIG.VERSION}_qtable`) || "{}");
+            stats.epsilon = parseFloat(localStorage.getItem(`${CONFIG.VERSION}_epsilon`) || "1.0");
+            stats.episode = parseInt(localStorage.getItem(`${CONFIG.VERSION}_episode`) || "0");
+            stats.record = parseInt(localStorage.getItem(`${CONFIG.VERSION}_record`) || "0");
+            updateUI();
+        }
+
+        function saveMemory() {
+            localStorage.setItem(`${CONFIG.VERSION}_qtable`, JSON.stringify(qTable));
+            localStorage.setItem(`${CONFIG.VERSION}_epsilon`, stats.epsilon);
+            localStorage.setItem(`${CONFIG.VERSION}_episode`, stats.episode);
+            localStorage.setItem(`${CONFIG.VERSION}_record`, stats.record);
+            
+            let levelIndex = document.getElementById('levelSelect').value;
+            let xPositions = obstacles.map(o => o.x);
+            localStorage.setItem(`${CONFIG.VERSION}_obstacles_${levelIndex}`, JSON.stringify(xPositions));
+        }
+
+        // ==========================================
+        // 5. INITIALISATION DES NIVEAUX
+        // ==========================================
+        function initLevelSelector() {
+            const select = document.getElementById('levelSelect');
+            select.innerHTML = '';
+            LEVELS_PRESET.forEach((_, i) => {
+                let opt = document.createElement('option');
+                opt.value = i;
+                opt.text = `Niveau ${i + 1} ${i < 3 ? '(Facile)' : i < 7 ? '(Moyen)' : '(Dur)'}`;
+                select.add(opt);
+            });
+            select.onchange = () => { isRunning = false; loadLevel(); };
+        }
+
+        function loadLevel() {
+            let levelIndex = document.getElementById('levelSelect').value;
+            let savedObs = localStorage.getItem(`${CONFIG.VERSION}_obstacles_${levelIndex}`);
+            
+            if (savedObs) {
+                obstacles = JSON.parse(savedObs).map(x => ({ x }));
+            } else {
+                obstacles = LEVELS_PRESET[levelIndex].map(x => ({ x }));
+            }
+            resetGame();
+            drawGame();
+        }
+
+        function resetGame() {
+            player.x = 100;
+            player.y = CONFIG.SOL_Y - CONFIG.PLAYER_SIZE;
+            player.vy = 0;
+            player.isJumping = false;
+            cameraX = 0;
+            stats.distance = 0;
+            deathFlash = 0;
+        }
+
+        // ==========================================
+        // 6. LOGIQUE DE L'IA (Q-Learning Intelligent)
+        // ==========================================
+        
+        function getState() {
+            let distances = [];
+            // L'IA ne regarde que les pics dans sa zone de vision
+            for (let obs of obstacles) {
+                let dist = obs.x - (player.x + CONFIG.PLAYER_SIZE);
+                if (dist >= 0 && dist < CONFIG.VISION_RANGE) distances.push(dist);
+            }
+            
+            distances.sort((a, b) => a - b);
+
+            // Si aucun pic dans la vision, on dit que la distance est "Infinie" (Valeur 9)
+            let d1 = distances.length > 0 ? Math.floor(distances[0] / 15) : 9;
+            let d2 = distances.length > 1 ? Math.floor(distances[1] / 15) : 9;
+            
+            // Mise à jour de l'affichage
+            let txt1 = d1 === 9 ? "Aucun" : distances[0] + "px";
+            let txt2 = d2 === 9 ? "Aucun" : distances[1] + "px";
+            document.getElementById('aiVision').innerText = `Pic1: ${txt1} | Pic2: ${txt2}`;
+            
+            return `${d1}_${d2}`; 
+        }
+
+        function chooseAction(state) {
+            if (!qTable[state]) qTable[state] = [0, 0]; // [Courir, Sauter]
+
+            if (Math.random() < stats.epsilon) {
+                return Math.random() < 0.5 ? 0 : 1; // Hasard
+            }
+
+            if (qTable[state][0] === qTable[state][1]) return 0;
+            return qTable[state][0] > qTable[state][1] ? 0 : 1;
+        }
+
+        async function runEpisode() {
+            resetGame();
+            let done = false;
+            let steps = 0;
+
+            while (!done && steps < 1000 && isRunning) {
+                let state = getState();
+                let action = chooseAction(state); // 0 = Courir, 1 = Sauter
+
+                // Appliquer la physique
+                let jumpedThisFrame = false;
+                if (action === 1 && !player.isJumping) {
+                    player.vy = -14;
+                    player.isJumping = true;
+                    jumpedThisFrame = true;
+                }
+
+                player.vy += CONFIG.GRAVITY;
+                player.y += player.vy;
+                if (player.y >= CONFIG.SOL_Y - CONFIG.PLAYER_SIZE) {
+                    player.y = CONFIG.SOL_Y - CONFIG.PLAYER_SIZE;
+                    player.vy = 0;
+                    player.isJumping = false;
+                }
+
+                player.x += CONFIG.SPEED;
+                cameraX = player.x - 150;
+                stats.distance++;
+
+                // --- SYSTÈME DE RÉCOMPENSE ULTRA-STRICT ---
+                let reward = 1; // Survie au sol
+
+                if (jumpedThisFrame) {
+                    if (state.split('_')[0] === '9') {
+                        // Sauter alors qu'il n'y a AUCUN pic en vue = PUNITION SEVÈRE
+                        reward = -20; 
+                    } else {
+                        // Sauter quand un pic est en vue = Petit coût
+                        reward = -2; 
+                    }
+                } 
+                else if (player.isJumping) {
+                    reward = 0; // Être en l'air ne rapporte rien
+                }
+
+                // Vérifier la fin du niveau
+                if (player.x > CONFIG.FINISH_LINE) {
+                    reward = 500;
+                    done = true;
+                }
+
+                // Vérifier les collisions (Mort)
+                for (let obs of obstacles) {
+                    if (player.x + CONFIG.PLAYER_SIZE > obs.x + 5 && 
+                        player.x < obs.x + 25 && 
+                        player.y + CONFIG.PLAYER_SIZE > CONFIG.SOL_Y - 25) {
+                        reward = -100; 
+                        deathFlash = 10; // Déclencher le flash rouge
+                        done = true;
+                    }
+                }
+
+                // Mise à jour du Cerveau
+                let nextState = getState();
+                if (!qTable[nextState]) qTable[nextState] = [0, 0];
+                let maxFuture = Math.max(qTable[nextState][0], qTable[nextState][1]);
+                qTable[state][action] += LEARNING.ALPHA * (reward + LEARNING.GAMMA * maxFuture - qTable[state][action]);
+
+                steps++;
+                if (stats.distance > stats.record) stats.record = stats.distance;
+
+                // --- GESTION DE LA VITESSE ET DE L'AFFICHAGE ---
+                // À très haute vitesse, on ne dessine pas toutes les frames pour soulager le processeur
+                let shouldDraw = true;
+                let delay = 20 / gameSpeed;
+                
+                if (gameSpeed === 8) {
+                    delay = 0;
+                    if (steps % 2 !== 0) shouldDraw = false; // Dessine 1 frame sur 2
+                } else if (gameSpeed === 16) {
+                    delay = 0;
+                    if (steps % 4 !== 0) shouldDraw = false; // Dessine 1 frame sur 4
+                }
+
+                if (shouldDraw) drawGame();
+                
+                await new Promise(r => setTimeout(r, delay));
+                
+                if (deathFlash > 0 && shouldDraw) deathFlash--;
+            }
+
+            stats.episode++;
+            if (stats.epsilon > LEARNING.MIN_EPSILON) stats.epsilon *= LEARNING.DECAY;
+            
+            updateUI();
+            saveMemory();
+
+            if (isRunning) runEpisode();
+        }
+
+        // ==========================================
+        // 7. RENDU GRAPHIQUE (Canvas)
+        // ==========================================
+        function drawGame() {
+            ctx.clearRect(0, 0, CONFIG.W, CONFIG.H);
+            
+            // Flash rouge en cas de mort
+            if (deathFlash > 0) {
+                ctx.fillStyle = `rgba(231, 76, 60, ${deathFlash / 20})`;
+                ctx.fillRect(0, 0, CONFIG.W, CONFIG.H);
+            }
+            
+            // Sol
+            ctx.fillStyle = '#2c3e50';
+            ctx.fillRect(0, CONFIG.SOL_Y, CONFIG.W, CONFIG.H - CONFIG.SOL_Y);
+            
+            // Effet de vitesse
+            ctx.strokeStyle = '#00ffcc';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, CONFIG.SOL_Y);
+            ctx.lineTo(CONFIG.W, CONFIG.SOL_Y);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.lineWidth = 1;
+            for(let i=0; i<5; i++) {
+                let lineX = ((i * 200) - (cameraX % 200));
+                ctx.beginPath();
+                ctx.moveTo(lineX, CONFIG.SOL_Y + 20);
+                ctx.lineTo(lineX + 50, CONFIG.SOL_Y + 20);
+                ctx.stroke();
+            }
+
+            // Zone de vision de l'IA
+            let visionX = player.x - cameraX + CONFIG.PLAYER_SIZE;
+            ctx.fillStyle = 'rgba(0, 255, 204, 0.05)';
+            ctx.fillRect(visionX, 0, CONFIG.VISION_RANGE, CONFIG.SOL_Y);
+
+            // Ligne d'arrivée
+            let finishX = CONFIG.FINISH_LINE - cameraX;
+            if (finishX < CONFIG.W && finishX > 0) {
+                ctx.fillStyle = 'rgba(0, 255, 0, 0.3)';
+                ctx.fillRect(finishX,0, CONFIG.W - finishX, CONFIG.SOL_Y);
+                ctx.fillStyle = '#fff';
+                ctx.font = '20px Arial';
+                ctx.fillText("ARRIVÉE", finishX + 10, 50);
+            }
+            
+            // Pics
+            ctx.fillStyle = '#e74c3c';
+            for (let obs of obstacles) {
+                let ecranX = obs.x - cameraX;
+                if (ecranX > -30 && ecranX < CONFIG.W) {
+                    ctx.beginPath();
+                    ctx.moveTo(ecranX, CONFIG.SOL_Y);
+                    ctx.lineTo(ecranX + 15, CONFIG.SOL_Y - 30);
+                    ctx.lineTo(ecranX + 30, CONFIG.SOL_Y);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+
+            // Joueur (IA)
+            let playerX = player.x - cameraX;
+            ctx.fillStyle = '#f1c40f';
+            ctx.fillRect(playerX, player.y, CONFIG.PLAYER_SIZE, CONFIG.PLAYER_SIZE);
+            
+            // Visage
+            ctx.fillStyle = '#000';
+            ctx.fillRect(playerX + 18, player.y + 8, 5, 5); 
+            ctx.fillRect(playerX + 8, player.y + 8, 5, 5);  
+            
+            if (!isRunning) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                ctx.font = '16px Arial';
+                ctx.fillText("Cliquez sur l'écran pour ajouter/supprimer des pics", 200, 130);
+            }
+        }
+
+        // ==========================================
+        // 8. INTERACTIONS UTILISATEUR & UI
+        // ==========================================
+        function updateUI() {
+            document.getElementById('episodeCount').innerText = stats.episode;
+            document.getElementById('recordDistance').innerText = stats.record;
+            document.getElementById('explorationRate').innerText = Math.round(stats.epsilon * 100) + "%";
+        }
+
+        // Édition de niveau (Clics)
+        canvas.addEventListener('mousedown', (e) => {
+            if (isRunning) return;
+            
+            let rect = canvas.getBoundingClientRect();
+            let clickX = e.clientX - rect.left;
+            let realX = clickX + cameraX;
+            realX = Math.floor(realX / 30) * 30 + 15;
+
+            let found = false;
+            for (let i = 0; i < obstacles.length; i++) {
+                if (realX >= obstacles[i].x && realX <= obstacles[i].x + 30) {
+                    obstacles.splice(i, 1);
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found && realX > 200) {
+                obstacles.push({ x: realX });
+                obstacles.sort((a, b) => a.x - b.x);
+            }
+            
+            saveMemory();
+            drawGame();
+        });
+
+        // Boutons
+        document.getElementById('startBtn').onclick = () => {
+            if (!isRunning) { isRunning = true; runEpisode(); }
+        };
+
+        document.getElementById('stopBtn').onclick = () => {
+            isRunning = false;
+            drawGame();
+        };
+
+        // Bouton de vitesse d'apprentissage (x1, x2, x4, x8, x16)
+        document.getElementById('speedBtn').onclick = () => {
+            const speeds = [1, 2, 4, 8, 16];
+            let currentIdx = speeds.indexOf(gameSpeed);
+            gameSpeed = speeds[(currentIdx + 1) % speeds.length];
+            document.getElementById('speedBtn').innerText = `⏩ Vitesse: x${gameSpeed}`;
+        };
+
+        document.getElementById('resetLevelBtn').onclick = () => {
+            if(confirm("Réinitialiser ce niveau à sa version de base ?")) {
+                let levelIndex = document.getElementById('levelSelect').value;
+                localStorage.removeItem(`${CONFIG.VERSION}_obstacles_${levelIndex}`);
+                loadLevel();
+            }
+        };
+
+        document.getElementById('resetIaBtn').onclick = () => {
+            if(confirm("Effacer toute la mémoire de l'IA ? (Les niveaux créés seront conservés)")) {
+                localStorage.removeItem(`${CONFIG.VERSION}_qtable`);
+                localStorage.removeItem(`${CONFIG.VERSION}_epsilon`);
+                localStorage.removeItem(`${CONFIG.VERSION}_episode`);
+                localStorage.removeItem(`${CONFIG.VERSION}_record`);
+                location.reload(); 
+            }
+        };
+
+        // ==========================================
+        // 9. DÉMARRAGE DU PROGRAMME
+        // ==========================================
+        initLevelSelector();
+        loadMemory();
+        loadLevel();
+    </script>
+</body>
+</html>
